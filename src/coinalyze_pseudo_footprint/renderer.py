@@ -32,7 +32,7 @@ def _setup_axes_single(fig_width: float, fig_height: float) -> tuple[plt.Figure,
 
 def _style_axes(ax: plt.Axes, *, font_scale: float = 1.0) -> None:
     ax.set_facecolor(NAVY)
-    ax.grid(True, color=GRID, linewidth=0.5, alpha=0.26)
+    ax.grid(True, color=GRID, linewidth=0.5, alpha=0.18)
     labelsize = max(6, round(9 * font_scale))
     ax.tick_params(colors=MUTED, labelsize=labelsize, length=3, width=0.8)
     for spine in ax.spines.values():
@@ -77,19 +77,24 @@ def _draw_volume_delta_profile(
     global_max_total: float,
     global_max_delta: float,
 ) -> None:
-    """Draw faint total-volume profile and strong delta overlay for one candle.
+    """Draw stacked bar: gray=common volume, colored=delta.
 
-    total volume shows where activity occurred. Delta overlay shows which side
-    dominated inside each price bin. This is the only supported footprint view.
+    Shows what proportion of total volume at each price level is directional
+    imbalance (delta). Bars are placed to the right of the candle body.
     """
     if fp.empty or global_max_total <= 0:
         return
 
-    slot_half = bar_spacing / 2.0
-    profile_cap = max(0.08, slot_half - candle_width / 2 - 0.06)
+    gap = 0.04
+    overlap_into_next = candle_width * 1.25
+    profile_cap = max(0.08, bar_spacing - candle_width - gap + overlap_into_next)
     usable_width = min(max_area_width, profile_cap)
-    center_x = x
-    bar_pad = price_bin_size * 0.14
+    right_origin = x + candle_width / 2 + gap
+    bar_pad = 0.0  # full bar height
+
+    y_min = float("inf")
+    y_max = float("-inf")
+    rows: list[tuple[float, float, float, float, float]] = []
 
     for _, row in fp.iterrows():
         y0 = float(row["price_bin"]) + bar_pad
@@ -101,41 +106,50 @@ def _draw_volume_delta_profile(
         buy = max(float(row.get("buy_volume", 0.0)), 0.0)
         sell = max(float(row.get("sell_volume", 0.0)), 0.0)
         total = buy + sell
-        delta = float(row.get("delta", buy - sell))
+        delta = abs(buy - sell)
+        common = min(buy, sell)
 
-        if total > 0:
-            total_w = usable_width * np.sqrt(total / global_max_total)
-            ax.fill_betweenx(
-                [y0, y1],
-                [center_x - total_w / 2, center_x - total_w / 2],
-                [center_x + total_w / 2, center_x + total_w / 2],
-                color=TOTAL,
-                alpha=0.20,
-                linewidth=0,
-                zorder=2,
-            )
-
-        if global_max_delta <= 0 or abs(delta) < 1e-12:
+        if total <= 0:
             continue
 
-        delta_w = usable_width * 0.92 * np.sqrt(abs(delta) / global_max_delta)
-        if delta > 0:
+        rows.append((y0, y1, buy, sell, total))
+        y_min = min(y_min, y0)
+        y_max = max(y_max, y1)
+
+    if not rows:
+        return
+
+    for y0, y1, buy, sell, total in rows:
+        delta = abs(buy - sell)
+        common = min(buy, sell)
+        bar_w = usable_width * (total / global_max_total)
+
+        # Common (overlap) portion — gray base
+        if common > 0:
+            common_w = bar_w * (common / total)
             ax.fill_betweenx(
                 [y0, y1],
-                [center_x, center_x],
-                [center_x + delta_w / 2, center_x + delta_w / 2],
-                color=BUY,
-                alpha=0.74,
+                [right_origin, right_origin],
+                [right_origin + common_w, right_origin + common_w],
+                color=TOTAL,
+                alpha=0.45,
                 linewidth=0,
-                zorder=4,
+                zorder=3,
             )
+            delta_x0 = right_origin + common_w
         else:
+            delta_x0 = right_origin
+
+        # Delta portion — colored
+        if delta > 0:
+            delta_w = bar_w * (delta / total)
+            color = BUY if buy > sell else SELL
             ax.fill_betweenx(
                 [y0, y1],
-                [center_x - delta_w / 2, center_x - delta_w / 2],
-                [center_x, center_x],
-                color=SELL,
-                alpha=0.74,
+                [delta_x0, delta_x0],
+                [delta_x0 + delta_w, delta_x0 + delta_w],
+                color=color,
+                alpha=0.82,
                 linewidth=0,
                 zorder=4,
             )
@@ -172,6 +186,7 @@ def _render_single_subplot(
     *,
     font_scale: float = 1.0,
     title_text: str | None = None,
+    pair_label: str | None = None,
 ) -> None:
     _style_axes(ax, font_scale=font_scale)
     x_positions = np.arange(len(candles), dtype=float) * config.bar_spacing
@@ -204,8 +219,26 @@ def _render_single_subplot(
     pad = max((high - low) * 0.14, config.price_bin_size * 6)
     ax.set_ylim(low - pad, high + pad)
 
-    max_ext = max(config.candle_width / 2, config.max_area_width / 2) + config.bar_spacing * 0.22
-    ax.set_xlim(x_positions[0] - max_ext, x_positions[-1] + max_ext)
+    # Calculate right-side bar extent for x_lim padding
+    _gap = 0.04
+    _overlap_into_next = config.candle_width * 1.25
+    _profile_cap = max(0.08, config.bar_spacing - config.candle_width - _gap + _overlap_into_next)
+    _usable_width = min(config.max_area_width, _profile_cap)
+    right_ext = config.candle_width / 2 + _gap + _usable_width
+    left_pad = right_ext * 0.25
+    right_pad = right_ext + config.bar_spacing * 0.80
+    ax.set_xlim(x_positions[0] - left_pad, x_positions[-1] + right_pad)
+
+    # Bar width scale label (top-right corner of data area)
+    scale_x = x_positions[-1] + right_pad * 0.55
+    scale_y = float(candles["high"].max()) + pad * 0.85
+    ax.text(
+        scale_x, scale_y,
+        f"max bar = {global_max_total:,.0f}",
+        va="top", ha="right",
+        color=MUTED, fontsize=8.5 * font_scale,
+        alpha=0.85, zorder=1,
+    )
 
     ticks, labels = _format_x_labels(candles, x_positions)
     fs = 9.5 * font_scale
@@ -215,7 +248,7 @@ def _render_single_subplot(
     last_close = float(candles.iloc[-1]["close"])
     ax.axhline(last_close, color=PRICE_LINE, linewidth=0.8 * font_scale, alpha=0.55, linestyle=(0, (4, 4)), zorder=1)
     ax.text(
-        x_positions[-1] + config.bar_spacing * 0.30,
+        x_positions[-1] + right_ext * 0.15,
         last_close,
         f" {last_close:,.1f} ",
         va="center",
@@ -229,6 +262,17 @@ def _render_single_subplot(
     if title_text:
         ax.set_title(title_text, color=TEXT, fontsize=11 * font_scale, loc="left", pad=8, weight="semibold")
 
+    if pair_label:
+        ax.text(
+            0.02, 0.97,
+            pair_label,
+            transform=ax.transAxes,
+            va="top", ha="left",
+            color="#ecf3fe", fontsize=45 * font_scale,
+            alpha=1.0, zorder=1,
+            weight="bold",
+        )
+
 
 def render_pseudo_footprint(
     candles: pd.DataFrame,
@@ -239,6 +283,7 @@ def render_pseudo_footprint(
     title: str = "OHLCV Pseudo Footprint",
     subtitle: str | None = None,
     global_max_delta: float | None = None,
+    pair_label: str | None = None,
 ) -> Path:
     """Render VolumeDelta pseudo footprint PNG.
 
@@ -259,14 +304,14 @@ def render_pseudo_footprint(
     global_max_total, computed_delta = _scale_values(footprint)
     global_max_delta = computed_delta if global_max_delta is None else max(float(global_max_delta), 1e-9)
 
-    _render_single_subplot(ax, candles, footprint, config, global_max_total, global_max_delta, font_scale=1.0)
+    _render_single_subplot(ax, candles, footprint, config, global_max_total, global_max_delta, font_scale=1.0, pair_label=pair_label)
 
     header = title if subtitle is None else f"{title}\n{subtitle}"
     ax.set_title(header, color=TEXT, loc="left", fontsize=14, pad=16, weight="semibold")
     ax.text(
         0.99,
         1.012,
-        "faint=total volume · blue/red=delta  |  OHLCV-estimated",
+        "faint=total vol · blue/red=delta (buy/sell)  |  OHLCV-estimated",
         transform=ax.transAxes,
         ha="right",
         va="bottom",
@@ -292,6 +337,7 @@ def render_pseudo_footprint_grid(
 
     config.validate()
     items = list(markets.items())[:4]
+
     global_max_total = global_max_delta = 1.0
     for _, (_, fp) in items:
         if fp is not None and not fp.empty:
@@ -319,6 +365,7 @@ def render_pseudo_footprint_grid(
             global_max_delta,
             font_scale=0.85,
             title_text=market_key,
+            pair_label=market_key,
         )
 
     for idx in range(len(items), 4):
@@ -327,7 +374,7 @@ def render_pseudo_footprint_grid(
     fig.text(
         0.5,
         0.005,
-        "faint=total volume · blue/red=delta  |  OHLCV-estimated  |  global scale shared across markets",
+        "faint=total vol · blue/red=delta (buy/sell)  |  OHLCV-estimated  |  global scale shared across markets",
         ha="center",
         va="bottom",
         color=MUTED,

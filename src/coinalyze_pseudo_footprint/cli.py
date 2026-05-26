@@ -1,6 +1,9 @@
+"""CLI entry point for coinalyze-pseudo-footprint."""
+
 from __future__ import annotations
 
 import argparse
+import re
 from pathlib import Path
 
 from .allocator import build_pseudo_footprint
@@ -8,6 +11,68 @@ from .display import select_recent_display_window
 from .loader import load_ohlcv
 from .models import FootprintConfig
 from .renderer import render_pseudo_footprint
+
+
+# Coinalyze exchange code → display name mapping
+# Source: https://note.com/1minami/n/n6d976b35ffc0
+_EXCHANGE_CODES: dict[str, str] = {
+    "A": "Binance",
+    "6": "Bybit",
+    "0": "BitMEX",
+    "2": "Deribit",
+    "3": "OKX",
+    "4": "Huobi",
+    "7": "Phemex",
+    "8": "dYdX",
+    "C": "Coinbase",
+    "F": "Bitfinex",
+    "K": "Kraken",
+    "W": "WOO X",
+    "Y": "Gate.io",
+    "B": "Bitstamp",
+    "D": "Bitforex",
+    "E": "MercadoBitcoin",
+    "G": "Gemini",
+    "I": "Bit2c",
+    "J": "Luno",
+    "L": "BitFlyer",
+    "M": "BtcMarkets",
+    "N": "IndependentReserve",
+    "P": "Poloniex",
+    "U": "Bithumb",
+    "V": "Vertex",
+    "H": "BTC",
+}
+
+
+def _format_pair_label(symbol: str, market_key: str | None = None) -> str:
+    """Build a human-readable label like 'Bybit BTCUSDT Spot' or 'Binance BTCUSDT-PERP'.
+
+    Prefers market_key for exchange name if available, otherwise parses the
+    Coinalyze symbol suffix.
+    """
+    if market_key:
+        # market_key format: "binance:btcusdt_perp.a"
+        parts = market_key.split(":", 1)
+        if len(parts) == 2:
+            exchange = parts[0].strip().capitalize()
+            raw = parts[1].strip()
+            pair = raw.split(".")[0] if "." in raw else raw
+            # Clean up perpetual marker
+            mkt_type = "Perpetual" if "_perp" in pair.lower() or "-perpetual" in pair.lower() else "Spot"
+            pair_clean = re.sub(r"_(perp|PERP)", "-PERP", pair, flags=re.IGNORECASE)
+            return f"{exchange} {pair_clean} {mkt_type}"
+
+    # Fallback: parse symbol like "BTCUSDT.6", "BTCUSDT_PERP.A", "BTC-PERPETUAL.2"
+    exchange_code = symbol.split(".")[-1] if "." in symbol else ""
+    exchange_name = _EXCHANGE_CODES.get(exchange_code, f"?{exchange_code}")
+    base = symbol.split(".")[0] if "." in symbol else symbol
+
+    is_perpetual = bool(re.search(r"PERP|PERPETUAL", base, re.IGNORECASE))
+    mkt_type = "Perpetual" if is_perpetual else "Spot"
+    pair_clean = re.sub(r"[_-](perp|PERP|PERPETUAL)", "-PERP", base, flags=re.IGNORECASE)
+
+    return f"{exchange_name} {pair_clean} {mkt_type}"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -26,7 +91,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--price-bin", type=float, default=10.0, help="Price bucket size, e.g. BTC=10 or 1")
     parser.add_argument("--bar-spacing", type=float, default=2.00, help="Horizontal spacing between target candles. Default 2.00")
     parser.add_argument("--candle-width", type=float, default=0.42, help="Candle body width. Default 0.42")
-    parser.add_argument("--max-area-width", type=float, default=1.05, help="Max VolumeDelta profile width. Default 1.05")
+    parser.add_argument("--max-area-width", type=float, default=2.0, help="Max VolumeDelta profile width. Default 2.0")
     parser.add_argument("--lookback-hours", type=float, default=6.0, help="Reserved for caller-side DB filtering/reporting")
     parser.add_argument(
         "--max-display-candles",
@@ -69,7 +134,7 @@ def main(argv: list[str] | None = None) -> int:
         max_candles=config.max_display_candles,
     )
 
-    label = args.market_key or args.symbol or Path(args.input).stem
+    label = _format_pair_label(args.symbol or "", args.market_key)
     window_note = (
         f" | display=last {len(display_candles)}/{total_candles} candles"
         if len(display_candles) != total_candles
@@ -86,6 +151,7 @@ def main(argv: list[str] | None = None) -> int:
         config=config,
         title=args.title,
         subtitle=subtitle,
+        pair_label=label,
     )
 
     print(

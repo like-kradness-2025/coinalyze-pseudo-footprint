@@ -15,7 +15,7 @@ class FootprintConfig:
     # faint total volume by price bin + stronger delta overlay.
     mode: str = "volume_delta"
     max_display_candles: int | None = 14
-    max_area_width: float = 1.05
+    max_area_width: float = 2.0
     candle_width: float = 0.42
     bar_spacing: float = 2.00
     lookback_hours: float | None = 6.0
