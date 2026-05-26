@@ -17,6 +17,7 @@ TEXT = "#ecf3fe"
 MUTED = "#96a8bf"
 BUY = "#22d3ee"
 SELL = "#ff5f78"
+TOTAL = "#6b7f99"
 UP = "#4ade80"
 DOWN = "#f43f5e"
 PRICE_LINE = "#38bdf8"
@@ -30,19 +31,17 @@ def _setup_axes_single(fig_width: float, fig_height: float) -> tuple[plt.Figure,
 
 
 def _style_axes(ax: plt.Axes, *, font_scale: float = 1.0) -> None:
-    """Apply dark theme to any axes (single or subplot)."""
     ax.set_facecolor(NAVY)
-    ax.grid(True, color=GRID, linewidth=0.5, alpha=0.35)
+    ax.grid(True, color=GRID, linewidth=0.5, alpha=0.26)
     labelsize = max(6, round(9 * font_scale))
     ax.tick_params(colors=MUTED, labelsize=labelsize, length=3, width=0.8)
     for spine in ax.spines.values():
         spine.set_color(GRID)
-        spine.set_alpha(0.80)
+        spine.set_alpha(0.70)
     ax.yaxis.tick_right()
     ax.yaxis.set_label_position("right")
     ax.yaxis.set_major_formatter(FuncFormatter(lambda y, _: f"{y:,.0f}"))
-    nbins = max(4, round(7 * font_scale))
-    ax.yaxis.set_major_locator(MaxNLocator(nbins=nbins, prune=None))
+    ax.yaxis.set_major_locator(MaxNLocator(nbins=max(4, round(7 * font_scale)), prune=None))
 
 
 def _draw_candle(ax: plt.Axes, x: float, row: pd.Series, *, candle_width: float, wick_width: float = 1.3) -> None:
@@ -51,21 +50,22 @@ def _draw_candle(ax: plt.Axes, x: float, row: pd.Series, *, candle_width: float,
     lower = min(o, c)
     height = max(abs(c - o), max((h - l) * 0.010, 1e-9))
 
-    ax.vlines(x, l, h, color=color, linewidth=wick_width, alpha=0.92, zorder=7)
-    rect = Rectangle(
-        (x - candle_width / 2, lower),
-        candle_width,
-        height,
-        facecolor=color,
-        edgecolor=color,
-        linewidth=1.15,
-        alpha=0.72,
-        zorder=8,
+    ax.vlines(x, l, h, color=color, linewidth=wick_width, alpha=0.92, zorder=8)
+    ax.add_patch(
+        Rectangle(
+            (x - candle_width / 2, lower),
+            candle_width,
+            height,
+            facecolor=color,
+            edgecolor=color,
+            linewidth=1.15,
+            alpha=0.78,
+            zorder=9,
+        )
     )
-    ax.add_patch(rect)
 
 
-def _draw_volume_areas(
+def _draw_volume_delta_profile(
     ax: plt.Axes,
     x: float,
     fp: pd.DataFrame,
@@ -74,50 +74,76 @@ def _draw_volume_areas(
     max_area_width: float,
     candle_width: float,
     bar_spacing: float,
-    max_buy: float,
-    max_sell: float,
+    global_max_total: float,
+    global_max_delta: float,
 ) -> None:
-    if fp.empty or (max_buy <= 0 and max_sell <= 0):
+    """Draw faint total-volume profile and strong delta overlay for one candle.
+
+    total volume shows where activity occurred. Delta overlay shows which side
+    dominated inside each price bin. This is the only supported footprint view.
+    """
+    if fp.empty or global_max_total <= 0:
         return
 
     slot_half = bar_spacing / 2.0
-    gap = max(0.025, min(0.08, (bar_spacing - candle_width) * 0.08))
-    profile_cap = max(0.08, slot_half * 1.8 - candle_width / 2 - gap)
-    usable_area_width = min(max_area_width, profile_cap)
-    right_origin = x + candle_width / 2 + gap
-    left_origin = x - candle_width / 2 - gap
-    bar_h0 = price_bin_size * 0.12
+    profile_cap = max(0.08, slot_half - candle_width / 2 - 0.06)
+    usable_width = min(max_area_width, profile_cap)
+    center_x = x
+    bar_pad = price_bin_size * 0.14
 
     for _, row in fp.iterrows():
-        y0 = float(row["price_bin"]) + bar_h0
-        y1 = float(row["price_bin"]) + price_bin_size - bar_h0
+        y0 = float(row["price_bin"]) + bar_pad
+        y1 = float(row["price_bin"]) + price_bin_size - bar_pad
         if y1 <= y0:
             y0 = float(row["price_bin"])
             y1 = y0 + price_bin_size
 
-        buy = max(float(row.get("buy_volume", 0)), 0)
-        sell = max(float(row.get("sell_volume", 0)), 0)
+        buy = max(float(row.get("buy_volume", 0.0)), 0.0)
+        sell = max(float(row.get("sell_volume", 0.0)), 0.0)
+        total = buy + sell
+        delta = float(row.get("delta", buy - sell))
 
-        if buy > 0 and max_buy > 0:
-            w = usable_area_width * np.sqrt(buy / max_buy)
+        if total > 0:
+            total_w = usable_width * np.sqrt(total / global_max_total)
             ax.fill_betweenx(
-                [y0, y1], [right_origin, right_origin],
-                [right_origin + w, right_origin + w],
-                color=BUY, alpha=0.62, linewidth=0, zorder=3,
+                [y0, y1],
+                [center_x - total_w / 2, center_x - total_w / 2],
+                [center_x + total_w / 2, center_x + total_w / 2],
+                color=TOTAL,
+                alpha=0.20,
+                linewidth=0,
+                zorder=2,
             )
-        if sell > 0 and max_sell > 0:
-            w = usable_area_width * np.sqrt(sell / max_sell)
+
+        if global_max_delta <= 0 or abs(delta) < 1e-12:
+            continue
+
+        delta_w = usable_width * 0.92 * np.sqrt(abs(delta) / global_max_delta)
+        if delta > 0:
             ax.fill_betweenx(
-                [y0, y1], [left_origin - w, left_origin - w],
-                [left_origin, left_origin],
-                color=SELL, alpha=0.62, linewidth=0, zorder=3,
+                [y0, y1],
+                [center_x, center_x],
+                [center_x + delta_w / 2, center_x + delta_w / 2],
+                color=BUY,
+                alpha=0.74,
+                linewidth=0,
+                zorder=4,
+            )
+        else:
+            ax.fill_betweenx(
+                [y0, y1],
+                [center_x - delta_w / 2, center_x - delta_w / 2],
+                [center_x, center_x],
+                color=SELL,
+                alpha=0.74,
+                linewidth=0,
+                zorder=4,
             )
 
 
 def _format_x_labels(candles: pd.DataFrame, x_positions: np.ndarray) -> tuple[np.ndarray, list[str]]:
     ts_labels = pd.to_datetime(candles["timestamp"])
     n = len(candles)
-    # Keep labels sparse enough to preserve the footprint itself.
     target_ticks = 5 if n <= 14 else 6
     step = max(1, int(np.ceil(n / target_ticks)))
     ticks = x_positions[::step]
@@ -128,38 +154,39 @@ def _format_x_labels(candles: pd.DataFrame, x_positions: np.ndarray) -> tuple[np
     return ticks, labels
 
 
+def _scale_values(footprint: pd.DataFrame) -> tuple[float, float]:
+    if footprint.empty:
+        return 1.0, 1.0
+    total = footprint["buy_volume"].clip(lower=0) + footprint["sell_volume"].clip(lower=0)
+    delta = footprint["delta"] if "delta" in footprint.columns else footprint["buy_volume"] - footprint["sell_volume"]
+    return float(max(total.max(), 1e-9)), float(max(np.abs(delta).max(), 1e-9))
+
+
 def _render_single_subplot(
     ax: plt.Axes,
     candles: pd.DataFrame,
     footprint: pd.DataFrame,
     config: FootprintConfig,
-    max_buy: float,
-    max_sell: float,
+    global_max_total: float,
+    global_max_delta: float,
     *,
     font_scale: float = 1.0,
     title_text: str | None = None,
 ) -> None:
-    """Render one set of candles + footprint onto a given Axes.
-
-    Shared by the single-chart and grid-chart entry points so all drawing
-    logic lives in one place and stays consistent.
-    """
     _style_axes(ax, font_scale=font_scale)
-    n = len(candles)
-    x_positions = np.arange(n, dtype=float) * config.bar_spacing
+    x_positions = np.arange(len(candles), dtype=float) * config.bar_spacing
     candle_by_ts = candles.set_index("timestamp")
     fp_groups = {ts: g for ts, g in footprint.groupby("timestamp")} if not footprint.empty else {}
 
-    # Wick thickness from candle volume (range: 0.3 low vol ~ 1.2 high vol)
     if "buy_volume" in candles.columns and "sell_volume" in candles.columns:
-        vols = candles["buy_volume"] + candles["sell_volume"]
-        max_vol = max(float(vols.max()), 1.0) if len(vols) > 0 else 1.0
-        wick_widths = {ts: 0.3 + 0.9 * (v / max_vol) for ts, v in vols.items()}
+        vols = (candles["buy_volume"] + candles["sell_volume"]).reset_index(drop=True)
+        max_vol = max(float(vols.max()), 1.0)
+        wick_widths = {ts: 0.45 + 0.85 * (float(vols.iloc[i]) / max_vol) for i, ts in enumerate(candle_by_ts.index)}
     else:
         wick_widths = {ts: 1.3 for ts in candle_by_ts.index}
 
     for x, (ts, candle) in zip(x_positions, candle_by_ts.iterrows()):
-        _draw_volume_areas(
+        _draw_volume_delta_profile(
             ax,
             float(x),
             fp_groups.get(ts, pd.DataFrame()),
@@ -167,37 +194,28 @@ def _render_single_subplot(
             max_area_width=config.max_area_width,
             candle_width=config.candle_width,
             bar_spacing=config.bar_spacing,
-            max_buy=max_buy,
-            max_sell=max_sell,
+            global_max_total=global_max_total,
+            global_max_delta=global_max_delta,
         )
-        _draw_candle(
-            ax, float(x), candle,
-            candle_width=config.candle_width,
-            wick_width=wick_widths.get(ts, 1.3),
-        )
+        _draw_candle(ax, float(x), candle, candle_width=config.candle_width, wick_width=wick_widths.get(ts, 1.3))
 
     low = float(candles["low"].min())
     high = float(candles["high"].max())
     pad = max((high - low) * 0.14, config.price_bin_size * 6)
     ax.set_ylim(low - pad, high + pad)
-    # Dynamic x-padding based on actual volume bar extension
-    ext_gap = max(0.025, min(0.08, (config.bar_spacing - config.candle_width) * 0.08))
-    max_ext = config.candle_width / 2 + ext_gap + config.max_area_width
-    left_pad = max_ext + config.bar_spacing * 0.15
-    right_pad = max_ext + config.bar_spacing * 0.15
-    ax.set_xlim(x_positions[0] - left_pad, x_positions[-1] + right_pad)
+
+    max_ext = max(config.candle_width / 2, config.max_area_width / 2) + config.bar_spacing * 0.22
+    ax.set_xlim(x_positions[0] - max_ext, x_positions[-1] + max_ext)
 
     ticks, labels = _format_x_labels(candles, x_positions)
     fs = 9.5 * font_scale
     ax.set_xticks(ticks)
     ax.set_xticklabels(labels, color=MUTED, fontsize=fs)
 
-    # last price badge
-    last = candles.iloc[-1]
-    last_close = float(last["close"])
+    last_close = float(candles.iloc[-1]["close"])
     ax.axhline(last_close, color=PRICE_LINE, linewidth=0.8 * font_scale, alpha=0.55, linestyle=(0, (4, 4)), zorder=1)
     ax.text(
-        x_positions[-1] + config.bar_spacing * 0.38 + config.max_area_width,
+        x_positions[-1] + config.bar_spacing * 0.30,
         last_close,
         f" {last_close:,.1f} ",
         va="center",
@@ -222,40 +240,33 @@ def render_pseudo_footprint(
     subtitle: str | None = None,
     global_max_delta: float | None = None,
 ) -> Path:
-    """Render candle + left sell/right buy pseudo footprint PNG.
+    """Render VolumeDelta pseudo footprint PNG.
 
     Renderer owns only visual mapping. It does not query data, select display
     windows, or allocate volume.
     """
-
+    config.validate()
     if candles.empty:
         raise ValueError("candles is empty")
 
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    n = len(candles)
-    fig_width = max(14.0, min(24.0, n * config.bar_spacing * 0.90))
+    fig_width = max(14.0, min(24.0, len(candles) * config.bar_spacing * 0.88))
     fig_height = 13.0
     fig, ax = _setup_axes_single(fig_width, fig_height)
 
-    # Global max buy/sell across display window (shared axis width)
-    if footprint.empty:
-        max_buy = max_sell = 1.0
-    else:
-        buys = footprint["buy_volume"].values
-        sells = footprint["sell_volume"].values
-        max_buy = float(max(buys.max(), 1e-9))
-        max_sell = float(max(sells.max(), 1e-9))
+    global_max_total, computed_delta = _scale_values(footprint)
+    global_max_delta = computed_delta if global_max_delta is None else max(float(global_max_delta), 1e-9)
 
-    _render_single_subplot(ax, candles, footprint, config, max_buy, max_sell, font_scale=1.0)
+    _render_single_subplot(ax, candles, footprint, config, global_max_total, global_max_delta, font_scale=1.0)
 
     header = title if subtitle is None else f"{title}\n{subtitle}"
     ax.set_title(header, color=TEXT, loc="left", fontsize=14, pad=16, weight="semibold")
     ax.text(
         0.99,
         1.012,
-        "left=sell · right=buy  |  volume  |  OHLCV-estimated",
+        "faint=total volume · blue/red=delta  |  OHLCV-estimated",
         transform=ax.transAxes,
         ha="right",
         va="bottom",
@@ -276,87 +287,52 @@ def render_pseudo_footprint_grid(
     config: FootprintConfig,
     title: str = "OHLCV Pseudo Footprint — 4 Markets",
 ) -> Path:
-    """Render up to 4 markets in a 2×2 grid with globally-shared delta bar-width scale.
-
-    Parameters
-    ----------
-    markets:
-        {market_key: (candles_df, footprint_df)}. At most 4 entries; extras are ignored.
-    output_path:
-        Output PNG path.
-    config:
-        Shared FootprintConfig for visual knobs.
-    title:
-        Figure-level title.
-    """
     if not markets:
         raise ValueError("markets is empty")
 
+    config.validate()
     items = list(markets.items())[:4]
-    n_markets = len(items)
-
-    # Pre-compute global max buy/sell across ALL markets
-    max_buy = max_sell = 1.0
+    global_max_total = global_max_delta = 1.0
     for _, (_, fp) in items:
         if fp is not None and not fp.empty:
-            b = float(fp["buy_volume"].max())
-            s = float(fp["sell_volume"].max())
-            if b > max_buy:
-                max_buy = b
-            if s > max_sell:
-                max_sell = s
+            t, d = _scale_values(fp)
+            global_max_total = max(global_max_total, t)
+            global_max_delta = max(global_max_delta, d)
 
-    rows = 2
-    cols = 2
-    fig, axes = plt.subplots(
-        rows, cols,
-        figsize=(24, 16),
-        dpi=155,
-        constrained_layout=True,
-    )
+    fig, axes = plt.subplots(2, 2, figsize=(24, 16), dpi=155, constrained_layout=True)
     fig.patch.set_facecolor(NAVY)
-    fig.suptitle(
-        title,
-        color=TEXT,
-        fontsize=16,
-        weight="semibold",
-        x=TITLE_LEFT,
-        ha="left",
-        y=0.985,
-    )
+    fig.suptitle(title, color=TEXT, fontsize=16, weight="semibold", x=TITLE_LEFT, ha="left", y=0.985)
 
-    # Render each market into its subplot
     for idx, (market_key, (candles, footprint)) in enumerate(items):
-        row = idx // cols
-        col = idx % cols
-        ax = axes[row][col]
-
+        ax = axes[idx // 2][idx % 2]
         if candles.empty:
             _style_axes(ax, font_scale=0.85)
             ax.text(0.5, 0.5, "no data", color=MUTED, ha="center", va="center", transform=ax.transAxes)
             ax.set_title(market_key, color=TEXT, fontsize=11, loc="left", pad=8, weight="semibold")
             continue
-
         _render_single_subplot(
-            ax, candles, footprint if footprint is not None else pd.DataFrame(), config, max_buy, max_sell,
+            ax,
+            candles,
+            footprint if footprint is not None else pd.DataFrame(),
+            config,
+            global_max_total,
+            global_max_delta,
             font_scale=0.85,
             title_text=market_key,
         )
 
-    # Hide unused subplots
-    for idx in range(n_markets, rows * cols):
-        row = idx // cols
-        col = idx % cols
-        axes[row][col].set_visible(False)
+    for idx in range(len(items), 4):
+        axes[idx // 2][idx % 2].set_visible(False)
 
-    # Shared footer annotation
     fig.text(
-        0.5, 0.005,
-        "left=sell · right=buy  |  delta  |  OHLCV-estimated  |  global delta scale shared across all markets",
-        ha="center", va="bottom",
-        color=MUTED, fontsize=9,
+        0.5,
+        0.005,
+        "faint=total volume · blue/red=delta  |  OHLCV-estimated  |  global scale shared across markets",
+        ha="center",
+        va="bottom",
+        color=MUTED,
+        fontsize=9,
     )
-
     fig.savefig(output_path, facecolor=fig.get_facecolor(), dpi=155, bbox_inches="tight")
     plt.close(fig)
     return Path(output_path)
