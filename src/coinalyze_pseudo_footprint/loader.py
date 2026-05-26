@@ -214,3 +214,49 @@ def load_ohlcv(
     if suffix in {".csv", ".txt"}:
         return load_csv_ohlcv(input_path)
     raise ValueError(f"unsupported input type: {input_path}")
+
+
+def load_open_interest(
+    db_path: str | Path,
+    *,
+    symbol: str | None = None,
+) -> pd.DataFrame:
+    """Load open interest data from Receiver SQLite DB.
+
+    Returns DataFrame with columns [timestamp, oi] ordered by timestamp,
+    or empty DataFrame if no OI data exists for the symbol.
+    """
+    db_path = Path(db_path)
+    if not db_path.exists():
+        return pd.DataFrame()
+
+    with sqlite3.connect(db_path) as conn:
+        cols = _table_columns(conn, "open_interest")
+        if not cols:
+            return pd.DataFrame()
+
+        where = ""
+        params: list[object] = []
+        symbol_col = _find_column(cols, "symbol")
+        if symbol and symbol_col:
+            where = f'WHERE LOWER("{symbol_col}") = LOWER(?)'
+            params.append(symbol)
+
+        ts_col = _find_column(cols, "timestamp")
+        sql = f'SELECT * FROM "open_interest" {where}'
+        if ts_col:
+            sql += f' ORDER BY "{ts_col}"'
+
+        raw = pd.read_sql_query(sql, conn, params=params)
+        if raw.empty:
+            return raw
+
+        close_col = _find_column(list(raw.columns), "close")
+        ts_col = _find_column(list(raw.columns), "timestamp")
+        if close_col and ts_col:
+            df = raw[[ts_col, close_col]].copy()
+            df.columns = ["timestamp", "oi"]
+            df["timestamp"] = pd.to_datetime(df["timestamp"], unit="s", utc=False)
+            return df
+
+    return pd.DataFrame()

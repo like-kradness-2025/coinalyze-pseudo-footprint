@@ -102,6 +102,7 @@ def build_pseudo_footprint(df: pd.DataFrame, config: FootprintConfig) -> PseudoF
                 "close": float(group.iloc[-1]["close"]),
                 "buy_volume": float(group["buy_volume"].sum()),
                 "sell_volume": float(group["sell_volume"].sum()),
+                "volume": float(group["volume"].sum()) if "volume" in group.columns else float(group["buy_volume"].sum() + group["sell_volume"].sum()),
                 "delta": float(group["buy_volume"].sum() - group["sell_volume"].sum()),
                 "source_rows": int(len(group)),
             }

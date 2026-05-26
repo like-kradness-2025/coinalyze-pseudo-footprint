@@ -30,6 +30,15 @@ def _setup_axes_single(fig_width: float, fig_height: float) -> tuple[plt.Figure,
     return fig, ax
 
 
+def _setup_axes_dual(fig_width: float, fig_height: float) -> tuple[plt.Figure, tuple[plt.Axes, plt.Axes]]:
+    fig = plt.figure(figsize=(fig_width, fig_height), dpi=155)
+    fig.patch.set_facecolor(NAVY)
+    gs = fig.add_gridspec(2, 1, height_ratios=[3, 1], hspace=0.06)
+    ax_main = fig.add_subplot(gs[0])
+    ax_lower = fig.add_subplot(gs[1], sharex=ax_main)
+    return fig, (ax_main, ax_lower)
+
+
 def _style_axes(ax: plt.Axes, *, font_scale: float = 1.0) -> None:
     ax.set_facecolor(NAVY)
     ax.grid(True, color=GRID, linewidth=0.5, alpha=0.18)
@@ -63,6 +72,145 @@ def _draw_candle(ax: plt.Axes, x: float, row: pd.Series, *, candle_width: float,
             zorder=9,
         )
     )
+
+
+def _draw_right_volume_profile(
+    ax: plt.Axes,
+    footprint: pd.DataFrame,
+    *,
+    price_bin_size: float,
+    x_origin: float,
+    max_width: float,
+    font_scale: float = 1.0,
+) -> None:
+    """Draw aggregated volume profile on the right side of the chart.
+    Bars extend leftward from x_origin (right anchor)."""
+    if footprint.empty:
+        return
+
+    agg = footprint.groupby("price_bin")[["buy_volume", "sell_volume"]].sum()
+    if agg.empty:
+        return
+
+    global_total = max(
+        float(agg["buy_volume"].clip(lower=0).add(agg["sell_volume"].clip(lower=0)).max()),
+        1e-9,
+    )
+
+    for price_bin, row in agg.iterrows():
+        buy = max(float(row["buy_volume"]), 0.0)
+        sell = max(float(row["sell_volume"]), 0.0)
+        total = buy + sell
+        if total <= 0:
+            continue
+
+        common = min(buy, sell)
+        delta = abs(buy - sell)
+
+        y0 = float(price_bin) + price_bin_size * 0.15
+        y1 = float(price_bin) + price_bin_size * 0.85
+
+        bar_w = max_width * (total / global_total)
+
+        # Common portion — gray (leftward from x_origin)
+        if common > 0:
+            common_w = bar_w * (common / total)
+            ax.fill_betweenx(
+                [y0, y1],
+                [x_origin - common_w, x_origin - common_w],
+                [x_origin, x_origin],
+                color=TOTAL,
+                alpha=0.40,
+                linewidth=0,
+                zorder=3,
+            )
+            delta_x1 = x_origin - common_w
+        else:
+            delta_x1 = x_origin
+
+        # Delta portion — colored (leftward from common edge)
+        if delta > 0:
+            delta_w = bar_w * (delta / total)
+            color = BUY if buy > sell else SELL
+            ax.fill_betweenx(
+                [y0, y1],
+                [delta_x1 - delta_w, delta_x1 - delta_w],
+                [delta_x1, delta_x1],
+                color=color,
+                alpha=0.80,
+                linewidth=0,
+                zorder=4,
+            )
+
+    # Label to the right of the profile
+    ax.text(
+        x_origin + max_width * 0.08,
+        (agg.index.max() + agg.index.min()) / 2,
+        "VOL",
+        va="center", ha="left",
+        color=MUTED, fontsize=7 * font_scale,
+        alpha=0.55, zorder=1, rotation=90,
+    )
+
+
+def _draw_lower_subplot(
+    ax: plt.Axes,
+    candles: pd.DataFrame,
+    oi_data: pd.DataFrame | None = None,
+    *,
+    font_scale: float = 1.0,
+    bar_spacing: float = 2.0,
+) -> None:
+    """Draw volume bars and OI line in the lower subplot."""
+    _style_axes(ax, font_scale=font_scale)
+
+    x_positions = np.arange(len(candles), dtype=float) * bar_spacing
+    vols = candles["volume"].values
+
+    # Volume bars colored by candle direction
+    colors = [UP if float(row["close"]) >= float(row["open"]) else DOWN for _, row in candles.iterrows()]
+    ax.bar(x_positions, vols, width=bar_spacing * 0.55, color=colors, alpha=0.50, zorder=3)
+
+    # Right y-axis for volume
+    ax.yaxis.tick_right()
+    ax.yaxis.set_label_position("right")
+    ax.set_ylabel("Volume", color=MUTED, fontsize=8 * font_scale)
+    ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:,.0f}"))
+
+    # OI line overlay (when data available)
+    if oi_data is not None and not oi_data.empty:
+        oi_aligned = _align_oi_to_candles(oi_data, candles)
+        if oi_aligned is not None and len(oi_aligned) == len(candles):
+            ax2 = ax.twinx()
+            ax2.plot(x_positions, oi_aligned, color="#fbbf24", linewidth=1.5, alpha=0.85, zorder=5)
+            ax2.set_ylabel("OI", color="#fbbf24", fontsize=8 * font_scale)
+            ax2.yaxis.tick_right()
+            ax2.yaxis.set_label_position("right")
+            ax2.tick_params(colors="#fbbf24", labelsize=7 * font_scale)
+            ax2.spines["right"].set_position(("outward", 55))
+            ax2.set_facecolor("none")
+
+    # Show x-axis labels only on the lower subplot
+    ticks, labels = _format_x_labels(candles, x_positions)
+    fs = 8.5 * font_scale
+    ax.set_xticks(ticks)
+    ax.set_xticklabels(labels, color=MUTED, fontsize=fs)
+    ax.tick_params(axis="x", colors=MUTED, labelsize=fs)
+
+
+def _align_oi_to_candles(oi_data: pd.DataFrame, candles: pd.DataFrame) -> np.ndarray | None:
+    """Align OI values to candle timestamps by forward-filling."""
+    if oi_data.empty or candles.empty:
+        return None
+    merged = pd.merge_asof(
+        candles[["timestamp"]].sort_values("timestamp"),
+        oi_data[["timestamp", "oi"]].sort_values("timestamp"),
+        on="timestamp",
+        direction="forward",
+    )
+    if merged["oi"].isna().all():
+        return None
+    return merged["oi"].ffill().fillna(0).values
 
 
 def _draw_volume_delta_profile(
@@ -244,6 +392,10 @@ def _render_single_subplot(
     fs = 9.5 * font_scale
     ax.set_xticks(ticks)
     ax.set_xticklabels(labels, color=MUTED, fontsize=fs)
+    ax.tick_params(axis="x", colors=MUTED, labelsize=fs)
+
+    # Hide x tick labels on main chart (shown in lower subplot)
+    ax.set_xticklabels([])
 
     last_close = float(candles.iloc[-1]["close"])
     ax.axhline(last_close, color=PRICE_LINE, linewidth=0.8 * font_scale, alpha=0.55, linestyle=(0, (4, 4)), zorder=1)
@@ -257,6 +409,17 @@ def _render_single_subplot(
         fontsize=fs,
         bbox=dict(boxstyle="round,pad=0.18", facecolor="#143752", edgecolor="none", alpha=0.92),
         zorder=10,
+    )
+
+    # Right-side total volume profile (bars extend leftward)
+    vp_x = x_positions[-1] + right_pad * 0.80
+    vp_max_w = right_pad * 0.55
+    _draw_right_volume_profile(
+        ax, footprint,
+        price_bin_size=config.price_bin_size,
+        x_origin=vp_x,
+        max_width=vp_max_w,
+        font_scale=font_scale,
     )
 
     if title_text:
@@ -284,8 +447,9 @@ def render_pseudo_footprint(
     subtitle: str | None = None,
     global_max_delta: float | None = None,
     pair_label: str | None = None,
+    oi_data: pd.DataFrame | None = None,
 ) -> Path:
-    """Render VolumeDelta pseudo footprint PNG.
+    """Render VolumeDelta pseudo footprint PNG with volume/OI subplot.
 
     Renderer owns only visual mapping. It does not query data, select display
     windows, or allocate volume.
@@ -298,8 +462,8 @@ def render_pseudo_footprint(
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     fig_width = max(14.0, min(24.0, len(candles) * config.bar_spacing * 0.88))
-    fig_height = 13.0
-    fig, ax = _setup_axes_single(fig_width, fig_height)
+    fig_height = 15.5
+    fig, (ax, ax_lower) = _setup_axes_dual(fig_width, fig_height)
 
     global_max_total, computed_delta = _scale_values(footprint)
     global_max_delta = computed_delta if global_max_delta is None else max(float(global_max_delta), 1e-9)
@@ -319,7 +483,12 @@ def render_pseudo_footprint(
         fontsize=10,
     )
 
-    fig.tight_layout(pad=1.3)
+    # Lower subplot: volume bars + OI line
+    _draw_lower_subplot(
+        ax_lower, candles, oi_data=oi_data,
+        font_scale=1.0, bar_spacing=config.bar_spacing,
+    )
+
     fig.savefig(output_path, facecolor=fig.get_facecolor(), bbox_inches="tight")
     plt.close(fig)
     return output_path
@@ -380,6 +549,76 @@ def render_pseudo_footprint_grid(
         color=MUTED,
         fontsize=9,
     )
+    fig.savefig(output_path, facecolor=fig.get_facecolor(), dpi=155, bbox_inches="tight")
+    plt.close(fig)
+    return Path(output_path)
+
+
+def render_exchange_grid(
+    markets: dict[str, tuple[pd.DataFrame, pd.DataFrame | None]],
+    output_path: str | Path,
+    *,
+    config: FootprintConfig,
+    title: str = "Pseudo Footprint",
+) -> Path:
+    """Render N markets in a dynamic grid, one image per exchange.
+
+    Grid columns auto-calculate: 1-4 → 2 cols, 5-9 → 3 cols, 10+ → 4 cols.
+    Figure size scales with the number of items.
+    """
+    if not markets:
+        raise ValueError("markets is empty")
+
+    config.validate()
+    items = list(markets.items())
+    n = len(items)
+
+    # Grid dimensions
+    cols = 2 if n <= 4 else min(4, int(np.ceil(np.sqrt(n))))
+    rows = int(np.ceil(n / cols))
+
+    # Figure sizing
+    fig_w = min(30, max(18, cols * 10))
+    fig_h = min(28, max(12, rows * 8))
+    fs = max(0.65, min(0.85, 12 / max(cols, rows)))
+
+    # Global scale across all markets in this exchange
+    global_max_total = global_max_delta = 1.0
+    for _, (_, fp) in items:
+        if fp is not None and not fp.empty:
+            t, d = _scale_values(fp)
+            global_max_total = max(global_max_total, t)
+            global_max_delta = max(global_max_delta, d)
+
+    fig, axes = plt.subplots(rows, cols, figsize=(fig_w, fig_h), dpi=155, constrained_layout=True)
+    fig.patch.set_facecolor(NAVY)
+    fig.suptitle(title, color=TEXT, fontsize=15, weight="semibold", x=TITLE_LEFT, ha="left", y=0.985)
+
+    axes_flat = axes.flatten() if rows * cols > 1 else [axes]
+
+    for idx, (market_key, (candles, footprint)) in enumerate(items):
+        ax = axes_flat[idx]
+        if candles.empty:
+            _style_axes(ax, font_scale=fs)
+            ax.text(0.5, 0.5, "no data", color=MUTED, ha="center", va="center", transform=ax.transAxes)
+            ax.set_title(market_key, color=TEXT, fontsize=11 * fs, loc="left", pad=6, weight="semibold")
+            continue
+        _render_single_subplot(
+            ax,
+            candles,
+            footprint if footprint is not None else pd.DataFrame(),
+            config,
+            global_max_total,
+            global_max_delta,
+            font_scale=fs,
+            title_text=market_key,
+            pair_label=market_key,
+        )
+
+    # Hide unused subplots
+    for idx in range(n, rows * cols):
+        axes_flat[idx].set_visible(False)
+
     fig.savefig(output_path, facecolor=fig.get_facecolor(), dpi=155, bbox_inches="tight")
     plt.close(fig)
     return Path(output_path)

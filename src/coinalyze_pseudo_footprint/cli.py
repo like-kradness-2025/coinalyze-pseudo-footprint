@@ -6,9 +6,11 @@ import argparse
 import re
 from pathlib import Path
 
+import pandas as pd
+
 from .allocator import build_pseudo_footprint
 from .display import select_recent_display_window
-from .loader import load_ohlcv
+from .loader import load_ohlcv, load_open_interest
 from .models import FootprintConfig
 from .renderer import render_pseudo_footprint
 
@@ -134,6 +136,21 @@ def main(argv: list[str] | None = None) -> int:
         max_candles=config.max_display_candles,
     )
 
+    # Only load OI for perpetual/futures pairs — spot has no OI
+    _base_symbol = (args.symbol or "").split(".")[0] if args.symbol else ""
+    _is_perpetual = bool(re.search(r"PERP|PERPETUAL", _base_symbol, re.IGNORECASE))
+    oi_data = load_open_interest(args.input, symbol=args.symbol) if _is_perpetual else pd.DataFrame()
+    if not oi_data.empty:
+        freq = f"{args.target_minutes}min"
+        oi_data["target_ts"] = oi_data["timestamp"].dt.floor(freq)
+        oi_data = oi_data.groupby("target_ts", sort=True)["oi"].last().reset_index()
+        oi_data = oi_data.rename(columns={"target_ts": "timestamp"})
+        ts_min = display_candles["timestamp"].min()
+        ts_max = display_candles["timestamp"].max()
+        if oi_data["timestamp"].dt.tz is not None:
+            oi_data["timestamp"] = oi_data["timestamp"].dt.tz_localize(None)
+        oi_data = oi_data[(oi_data["timestamp"] >= ts_min) & (oi_data["timestamp"] <= ts_max)].reset_index(drop=True)
+
     label = _format_pair_label(args.symbol or "", args.market_key)
     window_note = (
         f" | display=last {len(display_candles)}/{total_candles} candles"
@@ -152,6 +169,7 @@ def main(argv: list[str] | None = None) -> int:
         title=args.title,
         subtitle=subtitle,
         pair_label=label,
+        oi_data=oi_data if not oi_data.empty else None,
     )
 
     print(
