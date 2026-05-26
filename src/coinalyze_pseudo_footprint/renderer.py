@@ -74,9 +74,10 @@ def _draw_volume_areas(
     max_area_width: float,
     candle_width: float,
     bar_spacing: float,
-    global_max_delta: float,
+    max_buy: float,
+    max_sell: float,
 ) -> None:
-    if fp.empty or global_max_delta <= 0:
+    if fp.empty or (max_buy <= 0 and max_sell <= 0):
         return
 
     slot_half = bar_spacing / 2.0
@@ -94,19 +95,18 @@ def _draw_volume_areas(
             y0 = float(row["price_bin"])
             y1 = y0 + price_bin_size
 
-        d = float(row.get("delta", row["buy_volume"] - row["sell_volume"]))
-        if abs(d) < 1e-12:
-            continue
+        buy = max(float(row.get("buy_volume", 0)), 0)
+        sell = max(float(row.get("sell_volume", 0)), 0)
 
-        if d > 0:
-            w = usable_area_width * np.sqrt(d / global_max_delta)
+        if buy > 0 and max_buy > 0:
+            w = usable_area_width * np.sqrt(buy / max_buy)
             ax.fill_betweenx(
                 [y0, y1], [right_origin, right_origin],
                 [right_origin + w, right_origin + w],
                 color=BUY, alpha=0.62, linewidth=0, zorder=3,
             )
-        else:
-            w = usable_area_width * np.sqrt(-d / global_max_delta)
+        if sell > 0 and max_sell > 0:
+            w = usable_area_width * np.sqrt(sell / max_sell)
             ax.fill_betweenx(
                 [y0, y1], [left_origin - w, left_origin - w],
                 [left_origin, left_origin],
@@ -133,7 +133,8 @@ def _render_single_subplot(
     candles: pd.DataFrame,
     footprint: pd.DataFrame,
     config: FootprintConfig,
-    global_max_delta: float,
+    max_buy: float,
+    max_sell: float,
     *,
     font_scale: float = 1.0,
     title_text: str | None = None,
@@ -166,7 +167,8 @@ def _render_single_subplot(
             max_area_width=config.max_area_width,
             candle_width=config.candle_width,
             bar_spacing=config.bar_spacing,
-            global_max_delta=global_max_delta,
+            max_buy=max_buy,
+            max_sell=max_sell,
         )
         _draw_candle(
             ax, float(x), candle,
@@ -237,23 +239,23 @@ def render_pseudo_footprint(
     fig_height = 13.0
     fig, ax = _setup_axes_single(fig_width, fig_height)
 
-    # Global delta max across ALL candles (shared axis width)
-    if global_max_delta is not None:
-        pass  # caller-provided global scale
-    elif footprint.empty:
-        global_max_delta = 1.0
+    # Global max buy/sell across display window (shared axis width)
+    if footprint.empty:
+        max_buy = max_sell = 1.0
     else:
-        deltas = footprint["delta"].values if "delta" in footprint.columns else footprint["buy_volume"].values - footprint["sell_volume"].values
-        global_max_delta = float(max(np.abs(deltas).max(), 1e-9))
+        buys = footprint["buy_volume"].values
+        sells = footprint["sell_volume"].values
+        max_buy = float(max(buys.max(), 1e-9))
+        max_sell = float(max(sells.max(), 1e-9))
 
-    _render_single_subplot(ax, candles, footprint, config, global_max_delta, font_scale=1.0)
+    _render_single_subplot(ax, candles, footprint, config, max_buy, max_sell, font_scale=1.0)
 
     header = title if subtitle is None else f"{title}\n{subtitle}"
     ax.set_title(header, color=TEXT, loc="left", fontsize=14, pad=16, weight="semibold")
     ax.text(
         0.99,
         1.012,
-        "left=sell · right=buy  |  delta  |  OHLCV-estimated",
+        "left=sell · right=buy  |  volume  |  OHLCV-estimated",
         transform=ax.transAxes,
         ha="right",
         va="bottom",
@@ -293,18 +295,16 @@ def render_pseudo_footprint_grid(
     items = list(markets.items())[:4]
     n_markets = len(items)
 
-    # Pre-compute global max |delta| across ALL markets
-    global_max_delta = 1.0
+    # Pre-compute global max buy/sell across ALL markets
+    max_buy = max_sell = 1.0
     for _, (_, fp) in items:
         if fp is not None and not fp.empty:
-            deltas = (
-                fp["delta"].values
-                if "delta" in fp.columns
-                else fp["buy_volume"].values - fp["sell_volume"].values
-            )
-            gd = float(np.abs(deltas).max())
-            if gd > global_max_delta:
-                global_max_delta = gd
+            b = float(fp["buy_volume"].max())
+            s = float(fp["sell_volume"].max())
+            if b > max_buy:
+                max_buy = b
+            if s > max_sell:
+                max_sell = s
 
     rows = 2
     cols = 2
@@ -338,7 +338,7 @@ def render_pseudo_footprint_grid(
             continue
 
         _render_single_subplot(
-            ax, candles, footprint if footprint is not None else pd.DataFrame(), config, global_max_delta,
+            ax, candles, footprint if footprint is not None else pd.DataFrame(), config, max_buy, max_sell,
             font_scale=0.85,
             title_text=market_key,
         )
