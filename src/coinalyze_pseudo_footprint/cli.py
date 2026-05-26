@@ -13,7 +13,7 @@ from .renderer import render_pseudo_footprint
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="coinalyze-pseudo-footprint",
-        description="Render OHLCV-based pseudo footprint from Coinalyze Receiver SQLite/CSV data.",
+        description="Render VolumeDelta pseudo footprint from Coinalyze Receiver SQLite/CSV data.",
     )
     parser.add_argument("--input", required=True, help="Receiver SQLite DB or normalized OHLCV CSV")
     parser.add_argument("--output", default="out/pseudo_footprint.png", help="Output PNG path")
@@ -24,15 +24,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--source-minutes", type=int, default=1, help="Source candle minutes, default: 1")
     parser.add_argument("--target-minutes", type=int, default=15, help="Target candle minutes, default: 15")
     parser.add_argument("--price-bin", type=float, default=10.0, help="Price bucket size, e.g. BTC=10 or 1")
-    parser.add_argument("--bar-spacing", type=float, default=1.85, help="Horizontal spacing between target candles. Default 1.85")
-    parser.add_argument("--candle-width", type=float, default=0.52, help="Candle body width. Default 0.52")
-    parser.add_argument("--max-area-width", type=float, default=0.26, help="Max width of each side profile inside a candle slot. Default 0.26")
+    parser.add_argument("--bar-spacing", type=float, default=2.00, help="Horizontal spacing between target candles. Default 2.00")
+    parser.add_argument("--candle-width", type=float, default=0.42, help="Candle body width. Default 0.42")
+    parser.add_argument("--max-area-width", type=float, default=1.05, help="Max VolumeDelta profile width. Default 1.05")
     parser.add_argument("--lookback-hours", type=float, default=6.0, help="Reserved for caller-side DB filtering/reporting")
     parser.add_argument(
         "--max-display-candles",
         type=int,
-        default=10,
-        help="Max target candles to render. Default 10 for readability. Use 0 to render all.",
+        default=14,
+        help="Max target candles to render. Default 14 for readability. Use 0 to render all.",
     )
     parser.add_argument("--include-unfinished", action="store_true", help="Do not drop in-progress source candles")
     parser.add_argument("--title", default="OHLCV Pseudo Footprint")
@@ -77,7 +77,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     subtitle = (
         f"{label} | {args.source_interval} -> {args.target_minutes}min "
-        f"| delta | bin={args.price_bin:g}{window_note}"
+        f"| VolumeDelta | bin={args.price_bin:g}{window_note}"
     )
     output = render_pseudo_footprint(
         display_candles,
