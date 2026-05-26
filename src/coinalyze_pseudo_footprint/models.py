@@ -14,10 +14,10 @@ class FootprintConfig:
     # Visual defaults are intentionally restrained. Too many 15m candles make
     # the pseudo-footprint unreadable because each candle owns two side profiles.
     mode: str = "delta"  # always delta (net buy-sell pressure)
-    max_display_candles: int | None = 14
-    max_area_width: float = 0.26
-    candle_width: float = 0.52
-    bar_spacing: float = 1.85
+    max_display_candles: int | None = 10
+    max_area_width: float = 1.40
+    candle_width: float = 0.30
+    bar_spacing: float = 2.00
     lookback_hours: float | None = 6.0
     exclude_unfinished: bool = True
 
@@ -32,8 +32,8 @@ class FootprintConfig:
             raise ValueError("price_bin_size must be positive")
         if self.max_display_candles is not None and self.max_display_candles < 1:
             raise ValueError("max_display_candles must be positive or None")
-        if not 0 < self.max_area_width <= 1:
-            raise ValueError("max_area_width must be in (0, 1]")
+        if not 0 < self.max_area_width <= 2.0:
+            raise ValueError("max_area_width must be in (0, 2.0]")
         if not 0 < self.candle_width <= 1:
             raise ValueError("candle_width must be in (0, 1]")
         if not 1.0 <= self.bar_spacing <= 2.4:

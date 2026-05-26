@@ -31,8 +31,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--max-display-candles",
         type=int,
-        default=14,
-        help="Max target candles to render. Default 14 for readability. Use 0 to render all.",
+        default=10,
+        help="Max target candles to render. Default 10 for readability. Use 0 to render all.",
     )
     parser.add_argument("--include-unfinished", action="store_true", help="Do not drop in-progress source candles")
     parser.add_argument("--title", default="OHLCV Pseudo Footprint")
